@@ -1,0 +1,596 @@
+---
+title: "metabolic rate"
+author: "Raz"
+date: "2/25/2021"
+output:
+  word_document:
+    toc: yes
+    toc_depth: '2'
+  html_document:
+    code_folding: hide
+    theme: lumen
+    toc: yes
+    toc_depth: 2
+    number_sections: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+---
+
+#packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(reshape2)
+library(stringr)
+library(data.table)
+library(gridExtra)
+library(hms)
+library(lubridate)
+library(cowplot)
+library(stats)
+library(multcomp)
+#install.packages("googlesheets4")
+library(googlesheets4)
+library(epitools)
+library(openair)
+library(ggpubr)
+
+#Rmarkdown assembly
+library(rmdformats)
+library(rmarkdown)
+library(knitr)
+library(formattable)
+library(kableExtra)
+library(tinytex) #if this installation does not work, read section below in RStudio 
+
+```
+
+
+
+#העלת נתוני מהירות השאיבה 
+```{r}
+setwd("C:/Users/ASUS/Google Drive/Sponge/Data Analysis/metabolic rates")
+DFS_Data<-read.csv("DFS_25022021.csv")
+DFS_Data$Date<-as.Date(DFS_Data$Date, tryFormats = c("%Y-%m-%d", "%Y/%m/%d"))
+DFS_Data$Time<-as.hms(DFS_Data$Time)
+DFS_Data$Date_Time<-as_datetime(DFS_Data$Date_Time)
+DFS_Data$Date_Time<-as.POSIXct(DFS_Data$Date_Time)
+DFS_Data$Sponge_cod<-as.character(DFS_Data$Sponge_cod)
+DFS_Data$Osc_cod<-as.character(DFS_Data$Osc_cod)
+DFS_Data$Pumping_rate_L_hr<-DFS_Data$Pumping_rate_ml_s.1*3.6
+
+diffTime<-difftime(DFS_Data$Date_Time[1:(length(DFS_Data$Date_Time)-1)] ,
+          DFS_Data$Date_Time[2:length(DFS_Data$Date_Time)] )
+
+#Create vector arrays and add 0 from scratch to have the same number as the number of rows
+diffTime<-c(0,diffTime)
+#Add the vector to the column in the data frame
+DFS_Data$diffTime <-diffTime
+#Add the vector to the column in the data frame  
+namber_row<-which(DFS_Data$diffTime > 1500 | DFS_Data$diffTime < -1500 )
+#Create a new column with a value of 1
+DFS_Data$Dive_number<-1
+#Create a new column with consecutive numbers
+DFS_Data<-mutate(DFS_Data, id = row_number())
+#Create a sequence of numbers that increases when time changes, and set running times as a separate run
+for (i in 1:length(namber_row)) {
+DFS_Data$Dive_number<-ifelse(DFS_Data$id >= namber_row[i],
+                                    DFS_Data$Dive_number+1,DFS_Data$Dive_number+0)
+DFS_Data
+}
+
+#Create a group according to Dive DFS run
+DFS_DF  = DFS_Data  %>% 
+  group_by(HMA_LMA,Taxa,Taxa_cod,Sponge_cod,Osc_cod,Dive_number,DFS_run,) %>%
+  summarise_at(vars(Pumping_rate_L_hr),funs(Pumping_rate_L_hr=mean))
+
+
+```
+
+#העלת נתוני גודל ושטח האוסקולה וחיבור בין הקבצים
+```{r}
+Area_Volume_Data<-read.csv("Osculum_area_Volume.csv")
+
+PR_Data <- merge(Area_Volume_Data, DFS_DF,by=c("Taxa","Taxa_cod", "Sponge_cod" ,"Osc_cod"))
+
+colnames(PR_Data)[colnames(PR_Data)=="Pumping_rate_L_hr"] <- "OFR_L_hr"
+```
+
+
+#איור קצב השאיבה לאוסקולה ביחס לשטח האוסקולה  
+```{r, fig.width=12,fig.height=12}
+
+OFR_Data  = PR_Data %>% 
+  group_by(HMA_LMA,Taxa,Taxa_cod,Sponge_cod,Osc_cod,Osc_Area_mm2,Volume_mL) %>%
+   summarise_at(vars(OFR_L_hr),funs(mean,medianOFR_L_hr= median, sd, n()))
+
+OFR_Data$ci =OFR_Data$sd/sqrt(OFR_Data$n)*qt(p=0.975,df=(OFR_Data$n)-1)
+colnames(OFR_Data)[colnames(OFR_Data)=="mean"] <- "OFR_L_hr"
+
+OFR_Osculum_area_plot<-ggplot(OFR_Data, aes(x=Osc_Area_mm2,y=OFR_L_hr))+
+  geom_point(aes(colour=HMA_LMA),size=4)+
+  geom_smooth(aes(x=Osc_Area_mm2,y=OFR_L_hr),method = 'lm', se = F,colour=c("#787878"))+
+ stat_regline_equation(aes(label =  paste(..eq.label.., ..rr.label.., sep = "~~~~")),size=7)+
+  labs(x = expression("Osculum area"  ~(mm^2)),y = expression("OFR" ~("L"[pumped]~ hr^-1)),colour="")+  
+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, color = "black"),
+       legend.key = element_rect(fill = "white", color = NA,size=20),
+       legend.text = element_text(color = c("#787878"),size=25),
+      legend.title = element_text( size =20),
+      legend.key.size = unit(1, "cm"),
+  legend.key.width = unit(1,"cm"),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+      axis.title=element_text(size=30),
+      axis.text = element_text(size = 25))+
+  scale_color_manual(values=c("#FF4040", "#1874CD"))+
+   geom_errorbar(aes(ymin=OFR_Data$OFR_L_hr+OFR_Data$ci,
+                    ymax=OFR_Data$OFR_L_hr-OFR_Data$ci))
+
+ggsave("OFR_Osculum_area_plot.png", width = 12, height = 10, dpi = 120)
+OFR_Osculum_area_plot
+
+
+
+```
+
+
+
+```{r}
+Total_OSA_Data  = OFR_Data %>% 
+  group_by(HMA_LMA,Taxa,Taxa_cod,Sponge_cod,Volume_mL) %>%
+   summarise_at(vars(Osc_Area_mm2, OFR_L_hr),funs(sum, n()))
+
+
+colnames(Total_OSA_Data)[colnames(Total_OSA_Data)=="OFR_L_hr_sum"] <- "PR_L_hr"
+colnames(Total_OSA_Data)[colnames(Total_OSA_Data)=="Osc_Area_mm2_sum"] <- "Total_OSA_mm2"
+
+
+```
+
+
+
+#איור ריכוז החמצן שנמדדו במי הסביבה ב-3 פתחי יציאה של הספוג טיונלה 
+# Import data
+```{r}
+setwd("C:/Users/ASUS/Google Drive/Sponge/Data Analysis/respiration_files")
+respiration_Thenoella_Data<-read.csv("Thenoella_swinohei.csv")
+
+respiration_Thenoella_Data$Date_and_Time<-as.POSIXct(respiration_Thenoella_Data$Date_and_Time)
+```
+
+
+# Including Plots
+```{r, fig.width=10,fig.height=6}
+respiration_Thenoella_plot<-ggplot(data=respiration_Thenoella_Data,aes(x=Date_and_Time))+
+   annotate("rect", xmin = as.POSIXct("2018-07-29 18:00:00"), xmax = as.POSIXct("2018-07-30 06:00:00"),
+        ymin = -Inf, ymax = Inf,fill ="#080706",
+        alpha = 0.2) +
+   annotate("rect", xmin = as.POSIXct("2018-07-30 18:00:00"), xmax = as.POSIXct("2018-07-31 06:00:00"),
+        ymin = -Inf, ymax = Inf,fill = "#080706",
+        alpha = 0.2) +
+
+   annotate("rect", xmin = as.POSIXct("2018-07-29 15:02:00"), xmax = as.POSIXct("2018-07-29 18:00:00"),
+        ymin = -Inf, ymax = Inf,fill = "#FFFFFF",
+        alpha = 0.2) +
+   annotate("rect", xmin = as.POSIXct("2018-07-30 06:00:00"), xmax = as.POSIXct("2018-07-30 18:00:00"),
+        ymin = -Inf, ymax = Inf,fill = "#FFFFFF",
+        alpha = 0.2) +
+   annotate("rect", xmin = as.POSIXct("2018-07-31 06:00:00"), xmax = as.POSIXct("2018-07-31 08:28:51"),
+        ymin = -Inf, ymax = Inf,fill = "#FFFFFF",
+        alpha = 0.2) +
+  geom_point(aes(y=AMB),color ="#EE7600",size=0.5)+
+ # geom_point(aes(y=Ex_11),color ="#B452CD",size=0.5)+
+  geom_point(aes(y=Ex_12),color ="#634E41",size=0.5)+
+ # geom_point(aes(y=Ex_13),color ="#FF4040",size=0.5)+
+  labs(x = expression(""),y = expression(Delta*O[2] ~(mu*mol~L[p]^-1)))+
+  coord_cartesian( ylim = c(0, 225))+
+  scale_x_datetime(breaks = "6 hours")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+        panel.background = element_blank(),
+      axis.line = element_line(colour = "black"),
+        axis.title=element_text(size=25),
+      axis.text.y = element_text(size = 15),
+      axis.text.x = element_text(size = 15,angle = 45, hjust = 1))
+
+ggsave("C:/Users/ASUS/Google Drive/Sponge/Data Analysis/respiration_files/plot/respiration_Thenoella_plot.svg",width = 10, height = 6, dpi = 120)
+
+
+respiration_Thenoella_plot 
+```
+
+#העלת קובץ שיעור הסרת חמצן
+```{r}
+Oxygen_removal_Data<-read.csv("Oxygen_removal_Data.csv")
+
+
+Oxygen_removal_Data$Time<-as.hms(Oxygen_removal_Data$Time)
+Oxygen_removal_Data$Date_and_Time<-as.POSIXct(Oxygen_removal_Data$Date_and_Time)
+Oxygen_removal_Data$Date <- as.Date(Oxygen_removal_Data$Date,format= c("%d/%m/%Y"))
+Oxygen_removal_Data$Taxa_cod<-as.factor(Oxygen_removal_Data$Taxa_cod)
+Oxygen_removal_Data$Taxa<-as.factor(Oxygen_removal_Data$Taxa)
+
+```
+
+
+```{r, fig.width=20,fig.height=21}
+
+Dailycycles<-Oxygen_removal_Data
+
+
+Dailycycles$rounddatetime<-round_date(Dailycycles$Date_and_Time, "3 hour")
+Dailycycles$roundtime<-substr(Dailycycles$rounddatetime,12,19)
+Dailycycles$roundtime<-as.hms(Dailycycles$roundtime)
+
+summariOsc_Dailycycles<-Dailycycles%>% 
+  group_by(Taxa,Taxa_cod,Osc_cod,roundtime) %>% 
+  summarise_at(vars(Delta),funs(mean,median, sd, n()))
+
+colnames(summariOsc_Dailycycles)[colnames(summariOsc_Dailycycles)=="mean"] <- "mean_delta"
+
+
+
+summari_Dailycycles<-summariOsc_Dailycycles%>% 
+  group_by(Taxa,Taxa_cod,roundtime) %>% 
+  summarise_at(vars(mean_delta),funs(mean,median, sd, n()))
+
+summari_Dailycycles$ci =summari_Dailycycles$sd/sqrt(summari_Dailycycles$n)*
+                                                         qt(p=0.975,df=(summari_Dailycycles$n)-1)
+
+summari_Dailycycles$roundtime<-substr(summari_Dailycycles$roundtime, 1, 5)
+summariOsc_Dailycycles$roundtime<-substr(summariOsc_Dailycycles$roundtime, 1, 5)
+summari_Dailycycles$roundtime<-as.character(summari_Dailycycles$roundtime)
+summariOsc_Dailycycles$roundtime<-as.character(summariOsc_Dailycycles$roundtime)
+summari_Dailycycles$Taxa_cod<-
+                  factor(summari_Dailycycles$Taxa_cod,
+                                                      levels=c("T.swinhoei","D.erythraeanus",
+                                                               "S.clavatus",
+                                                               "M.fistulifera","C.cyathophora",
+                                                               "N.rowi","C.siphonella"))
+summariOsc_Dailycycles$Taxa_cod<-
+                  factor(summariOsc_Dailycycles$Taxa_cod,
+                                                      levels=c("T.swinhoei","D.erythraeanus",
+                                                               "S.clavatus",
+                                                               "M.fistulifera","C.cyathophora",
+                                                               "N.rowi","C.siphonella"))
+
+
+summari_Dailycycles_boxplot <-ggplot(data=summariOsc_Dailycycles,aes(x=roundtime, y=mean_delta))+
+                                   annotate("rect", xmin =  -Inf, xmax = "06:00",
+                                                     ymin = -Inf, ymax = Inf,fill ="#080706", alpha = 0.2) +
+                                    annotate("rect", xmin = "06:00", xmax = "18:00",
+                                                     ymin = -Inf, ymax = Inf,fill = "#FFFFFF",alpha = 0.2) +
+                                    annotate("rect", xmin = "18:00", xmax = Inf,
+                                                     ymin = -Inf, ymax = Inf,fill = "#080706",alpha = 0.2) +
+  # facet_grid(~Taxa_cod~.,scales='free')+
+  facet_wrap( ~ Taxa_cod, ncol=3,scales='free') +
+  geom_boxplot(outlier.shape = NA, color = "black",size=1)+
+  geom_line(data = summari_Dailycycles, mapping = aes(x = roundtime, y = median, group=1),color = "black",size=1)+
+      labs(x = expression(""),
+                                        y = expression(Delta*O[2] ~(mu*mol~L[p]^-1)),color="")+
+                             theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                                    panel.border = element_rect(fill = NA, color = "black"),
+                                    panel.background = element_blank(), axis.line = element_line(colour = "black"),
+                                    strip.background = element_rect(fill="white",color="black", size=1.5, linetype="solid"),
+                                    legend.key = element_rect(fill = "white", color = NA,size=30),
+                                    legend.title = element_text( size =20),
+                                    legend.position = "none",
+                                    legend.text = element_text(size=30),
+                                    legend.key.size = unit(1.5, "cm"),
+                                    legend.key.width = unit(1.5,"cm"),
+                                    axis.title.y=element_text(size=35),
+                                    axis.title.x=element_text(size=30),
+                                    axis.text.y = element_text(size=20),
+                                    axis.text.x = element_text(size = 20,angle = 45, hjust = 1),
+                                    strip.text= element_text(size =20,face="italic"))
+                                   # coord_cartesian(ylim = c(0,30))
+ggsave("summari_Dailycycles_boxplot.png",width = 20, height = 21, dpi = 120)
+summari_Dailycycles_boxplot 
+```
+
+
+
+```{r}
+Oxygen_removal_Data<-read.csv("Oxygen_removal_Data.csv") 
+Sunrise_Sunset_Data<-read.csv("Sunrise_Sunset_11072019.csv") 
+
+Oxygen_removal_Data$Date <- as.Date(Oxygen_removal_Data$Date,format= c("%d/%m/%Y"))
+Sunrise_Sunset_Data$Date <- as.Date(Sunrise_Sunset_Data$Date,format= c("%d/%m/%Y"))
+Sunrise_Sunset_respiration_Data <- merge(Oxygen_removal_Data, Sunrise_Sunset_Data,by="Date")
+
+Sunrise_Sunset_respiration_Data$Time<-as.character(Sunrise_Sunset_respiration_Data$Time)
+Sunrise_Sunset_respiration_Data$Time <- as.hms(Sunrise_Sunset_respiration_Data$Time)
+
+Sunrise_Sunset_respiration_Data$Sunrise<-as.character(Sunrise_Sunset_respiration_Data$Sunrise)
+Sunrise_Sunset_respiration_Data$Sunrise <- as.hms(Sunrise_Sunset_respiration_Data$Sunrise)
+Sunrise_Sunset_respiration_Data$Sunset<-as.character(Sunrise_Sunset_respiration_Data$Sunset)
+Sunrise_Sunset_respiration_Data$Sunset <- as.hms(Sunrise_Sunset_respiration_Data$Sunset)
+Sunrise_Sunset_respiration_Data$Twilight_Sunrise<-as.character(Sunrise_Sunset_respiration_Data$Twilight_Sunrise)
+Sunrise_Sunset_respiration_Data$Twilight_Sunrise <- as.hms(Sunrise_Sunset_respiration_Data$Twilight_Sunrise)
+Sunrise_Sunset_respiration_Data$Twilight_Sunset<-as.character(Sunrise_Sunset_respiration_Data$Twilight_Sunset)
+Sunrise_Sunset_respiration_Data$Twilight_Sunset <- as.hms(Sunrise_Sunset_respiration_Data$Twilight_Sunset)
+
+
+
+Sunrise_Sunset_respiration_Data $light_darkness <-ifelse(Sunrise_Sunset_respiration_Data $Sunset >=       
+                                                      Sunrise_Sunset_respiration_Data $Time &
+                                                 Sunrise_Sunset_respiration_Data $Sunrise <=
+                                                       Sunrise_Sunset_respiration_Data $Time,"light",
+                                                 ifelse(Sunrise_Sunset_respiration_Data $Twilight_Sunset <=
+                                                      Sunrise_Sunset_respiration_Data $Time ,"darkness",
+                                                ifelse(Sunrise_Sunset_respiration_Data $Twilight_Sunrise >=
+                                                      Sunrise_Sunset_respiration_Data $Time ,"darkness",
+                                               ifelse(Sunrise_Sunset_respiration_Data $Sunset <=
+                                                       Sunrise_Sunset_respiration_Data $Time&
+                                                  Sunrise_Sunset_respiration_Data $Twilight_Sunset >=
+                                                       Sunrise_Sunset_respiration_Data $Time,"Twilight",
+                                                  ifelse(Sunrise_Sunset_respiration_Data $Twilight_Sunrise <=
+                                                       Sunrise_Sunset_respiration_Data $Time&
+                                                  Sunrise_Sunset_respiration_Data $Sunrise >=
+                                                       Sunrise_Sunset_respiration_Data $Time,"Twilight", "NA")))))
+
+Sunrise_Sunset_respiration_Data$Taxa<-as.factor(Sunrise_Sunset_respiration_Data$Taxa)
+Sunrise_Sunset_respiration_Data$Taxa_cod<-as.factor(Sunrise_Sunset_respiration_Data$Taxa_cod)
+
+write.csv(Sunrise_Sunset_respiration_Data , "Sunrise_Sunset_respiration_Data.csv")
+                                                 
+```
+
+
+```{r}
+
+Sunrise_Sunset_Oxygen_removal_Data<-read.csv("Sunrise_Sunset_respiration_Data.csv") 
+
+Sunrise_Sunset_Oxygen_removal_Data$Time<-as.hms(Sunrise_Sunset_Oxygen_removal_Data$Time)
+Sunrise_Sunset_Oxygen_removal_Data$Date_and_Time<-as.POSIXct(Sunrise_Sunset_Oxygen_removal_Data$Date_and_Time)
+Sunrise_Sunset_Oxygen_removal_Data$Date <- as.Date(Sunrise_Sunset_Oxygen_removal_Data$Date,format= c("%d/%m/%Y"))
+Sunrise_Sunset_Oxygen_removal_Data$Taxa_cod<-as.factor(Sunrise_Sunset_Oxygen_removal_Data$Taxa_cod)
+Sunrise_Sunset_Oxygen_removal_Data$Taxa<-as.factor(Sunrise_Sunset_Oxygen_removal_Data$Taxa)
+Sunrise_Sunset_Oxygen_removal_Data$light_darkness<-as.factor(Sunrise_Sunset_Oxygen_removal_Data$light_darkness)
+Sunrise_Sunset_Oxygen_removal_Data<-Sunrise_Sunset_Oxygen_removal_Data %>% filter(light_darkness !="Twilight")
+
+Sunrise_Sunset_osc_Data  =Sunrise_Sunset_Oxygen_removal_Data%>% 
+  group_by(HMA_LMA,Taxa,Taxa_cod,Sponge_Cod,Osc_cod,light_darkness) %>%
+  summarise_at(vars(Delta),funs(mean,median, sd, n()))
+
+Sunrise_Sunset_osc_Data$ci=Sunrise_Sunset_osc_Data$sd/
+                                       sqrt(Sunrise_Sunset_osc_Data$n)*
+                                      qt(p = 0.975, df = (Sunrise_Sunset_osc_Data$n)-1)
+write.csv(Sunrise_Sunset_osc_Data , "Sunrise_Sunset_osc_Data.csv")
+colnames(Sunrise_Sunset_osc_Data)[colnames(Sunrise_Sunset_osc_Data)=="mean"] <- "Oxygen_removal"
+
+Sunrise_Sunset_sponge_Data  =Sunrise_Sunset_osc_Data%>% 
+  group_by(HMA_LMA,Taxa,Taxa_cod,Sponge_Cod,light_darkness) %>%
+  summarise_at(vars(Oxygen_removal),funs(mean,median, sd, n()))
+
+Sunrise_Sunset_sponge_Data$ci=Sunrise_Sunset_sponge_Data$sd/
+                                       sqrt(Sunrise_Sunset_sponge_Data$n)*
+                                      qt(p = 0.975, df = (Sunrise_Sunset_sponge_Data$n)-1)
+
+write.csv(Sunrise_Sunset_sponge_Data , "Sunrise_Sunset_sponge_Data.csv")
+colnames(Sunrise_Sunset_sponge_Data)[colnames(Sunrise_Sunset_sponge_Data)=="mean"] <- "Oxygen_removal"
+
+Sunrise_Sunset_taxa_Data  =Sunrise_Sunset_sponge_Data%>% 
+  group_by(HMA_LMA,Taxa,Taxa_cod,light_darkness) %>%
+  summarise_at(vars(Oxygen_removal),funs(mean,median, sd, n()))
+
+Sunrise_Sunset_taxa_Data$ci=Sunrise_Sunset_taxa_Data$sd/
+                                       sqrt(Sunrise_Sunset_taxa_Data$n)*
+                                      qt(p = 0.975, df = (Sunrise_Sunset_taxa_Data$n)-1)
+write.csv(Sunrise_Sunset_taxa_Data , "Sunrise_Sunset_taxa_Data.csv")
+colnames(Sunrise_Sunset_taxa_Data)[colnames(Sunrise_Sunset_taxa_Data)=="mean"] <- "Oxygen_removal"
+
+
+
+```
+
+```{r, fig.width=20,fig.height=15}
+
+
+Sunrise_Sunset_sponge_Data$Taxa_cod<- factor(Sunrise_Sunset_sponge_Data$Taxa_cod,levels=c("T.swinhoei","D.erythraeanus",
+                                                               "S.clavatus","C.siphonella",
+                                                               "M.fistulifera","C.cyathophora",
+                                                               "N.rowi"))
+Sunrise_Sunset_spong<-Sunrise_Sunset_sponge_Data %>% filter(light_darkness !="Twilight")
+f_labels <- data.frame(light_darkness=Sunrise_Sunset_spong$light_darkness,Taxa_cod=Sunrise_Sunset_spong$Taxa_cod,Oxygen_removal=Sunrise_Sunset_spong$Oxygen_removal,lable=NA )
+f_labels[11,4]<-"POC"
+
+Sunrise_Sunset_spong_Data_boxplot<-ggplot(Sunrise_Sunset_sponge_Data,
+                                                      aes(x=Taxa_cod,y=Oxygen_removal,
+                                                                            fill = light_darkness))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_hline(yintercept=3.841522,color="black", linetype="dashed", size=2)+ #mean POC
+  geom_text(data=f_labels,aes(y=3.841522, label=lable),hjust =0, vjust = -1,size =10 )+   
+#  geom_text(data=f_labels,aes(aes(y=3.8,label = lable),size=30))+
+  facet_grid(.~Taxa_cod,scales='free')+
+  stat_summary(fun.y = mean, geom = "point", size=2, shape=4,
+               position = position_dodge(width = .75))+
+  labs(x ="" ,y = expression(Delta*O[2] ~(mu*mol~L[p]^-1)),fill= "")+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+      panel.border = element_rect(fill = NA, color = "black"),
+       legend.key = element_rect(fill = "white", color = NA,size=30),
+       legend.title = element_text( size =20),
+       legend.text = element_text(size=30),
+      legend.key.size = unit(1.5, "cm"),
+       legend.key.width = unit(1.5,"cm"),
+      legend.position = c(0.93, 0.9) ,
+      # plot.subtitle = element_text(hjust = -0.5,vjust=0,size = 12,),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        strip.background = element_rect(fill="white",color="black", size=1.5, linetype="solid"),
+        axis.title.y=element_text(size=40),
+      axis.title.x=element_blank(),
+      axis.text.y = element_text(size=35),
+      axis.text.x = element_blank(),
+      strip.text= element_text(size =30,face="italic"))+
+  scale_fill_manual(values=c("#454545", "#FFA500", "#1C86EE"))
+  # coord_trans(y="log10")
+#Sunrise_Sunset_spong_Data_boxplot+
+
+ggsave("Sunrise_Sunset_spong_Data_boxplot.png",width = 25, height =15, dpi = 120)
+
+Sunrise_Sunset_spong_Data_boxplot
+
+```
+```{r}
+#Fit an Analysis of Variance Model
+aov_Oxygen_removal <- aov(Oxygen_removal ~ Taxa_cod*light_darkness, data=Sunrise_Sunset_osc_Data)
+#ANOVA data summary table
+obs_aov=summary(aov_Oxygen_removal)
+#Save the observed F value
+obs_f = obs_aov[[1]]$`F value`[1:3]
+#Number of times to run
+n=1000
+#Create a vector for each variable with the number of runs
+taxa_rand_f = 1:n
+lightDark_rand_f = 1:n
+interaction_rand_f = 1:n
+
+#A loop in which the oxygen removal is mixed n times and a new F is found for each variable
+for (i in 1:n) {
+  rand_data =Sunrise_Sunset_osc_Data
+  rand_data$Oxygen_removal = sample(Sunrise_Sunset_osc_Data$Oxygen_removal, 
+                                       size = length(Sunrise_Sunset_osc_Data$Oxygen_removal),replace = F)
+  r_aov = aov(Oxygen_removal~ Taxa_cod*light_darkness, data=rand_data)
+  rand_aov=summary(r_aov)
+  r_f = rand_aov[[1]]$`F value`[1:3]
+  taxa_rand_f[i] = r_f[1]
+  lightDark_rand_f[i] = r_f[2]
+  interaction_rand_f[i] = r_f[3]
+}
+#Drawing a graph for each variable
+hist(taxa_rand_f, xlim = c(0,obs_f[1])*1.5)
+abline(v = obs_f[1])
+hist(lightDark_rand_f)
+abline(v = obs_f[2])
+hist(interaction_rand_f)
+abline(v=obs_f[3])
+
+#Calculation and presentation of P value for each variable
+P_value_taxa<-(sum(taxa_rand_f>obs_f[1])+sum(taxa_rand_f<-obs_f[1]))/1000
+P_value_lightDark<-(sum(lightDark_rand_f>obs_f[2])+sum(lightDark_rand_f<-obs_f[2]))/1000
+P_value_interaction<-sum(interaction_rand_f>obs_f[3]+sum(interaction_rand_f<-obs_f[3]))/1000
+P_value_taxa
+P_value_lightDark
+P_value_interaction
+
+
+summary(glht(aov_Oxygen_removal))
+TukeyHSD(aov_Oxygen_removal)
+
+
+
+library(rcompanion)
+
+PT = pairwisePermutationTest(Oxygen_removal ~ Taxa_cod*light_darkness, data=Sunrise_Sunset_osc_Data,
+                             method="fdr")
+
+PT
+library(multcompView)
+
+library(lsmeans)
+
+marginal = lsmeans(Oxygen_removal ~ Taxa_cod*light_darkness, data=Sunrise_Sunset_osc_Data)
+
+pairs(marginal,
+      adjust="tukey")
+pairs(aov_Oxygen_removal,
+      adjust="tukey")
+```
+#סטטיסטיקה על שיעור הסרת חמצן
+```{r, fig.width=20,fig.height=15}
+
+Oxygen_removal_osc_Data  =Oxygen_removal_Data%>% 
+  group_by(HMA_LMA,Taxa,Taxa_cod,Sponge_Cod,Osc_cod) %>%
+  summarise_at(vars(Delta),funs(mean,median, sd, n()))
+
+Oxygen_removal_osc_Data$ci=Oxygen_removal_osc_Data$sd/
+                                       sqrt(Oxygen_removal_osc_Data$n)*
+                                      qt(p = 0.975, df = (Oxygen_removal_osc_Data$n)-1)
+write.csv(Oxygen_removal_osc_Data , "Oxygen_removal_osc_Data.csv")
+colnames(Oxygen_removal_osc_Data)[colnames(Oxygen_removal_osc_Data)=="mean"] <- "Oxygen_removal"
+
+Oxygen_removal_sponge_Data  =Oxygen_removal_osc_Data%>% 
+  group_by(HMA_LMA,Taxa,Taxa_cod,Sponge_Cod) %>%
+  summarise_at(vars(Oxygen_removal),funs(mean,median, sd, n()))
+
+Oxygen_removal_sponge_Data$ci=Oxygen_removal_sponge_Data$sd/
+                                       sqrt(Oxygen_removal_sponge_Data$n)*
+                                      qt(p = 0.975, df = (Oxygen_removal_sponge_Data$n)-1)
+
+write.csv(Oxygen_removal_sponge_Data , "Oxygen_removal_sponge_Data.csv")
+colnames(Oxygen_removal_sponge_Data)[colnames(Oxygen_removal_sponge_Data)=="mean"] <- "Oxygen_removal"
+
+Oxygen_removal_taxa_Data  =Oxygen_removal_sponge_Data%>% 
+  group_by(HMA_LMA,Taxa,Taxa_cod) %>%
+  summarise_at(vars(Oxygen_removal),funs(mean,median, sd, n()))
+
+Oxygen_removal_taxa_Data$ci=Oxygen_removal_taxa_Data$sd/
+                                       sqrt(Oxygen_removal_taxa_Data$n)*
+                                      qt(p = 0.975, df = (Oxygen_removal_taxa_Data$n)-1)
+write.csv(Oxygen_removal_taxa_Data, "Oxygen_removal_taxa_Data.csv")
+colnames(Oxygen_removal_taxa_Data)[colnames(Oxygen_removal_taxa_Data)=="mean"] <- "Oxygen_removal"
+```
+
+#איור שיעור הסרת החמצן לפי מינים הפרדה לHMA LMA
+```{r, fig.width=20,fig.height=10}
+Oxygen_removal_osc_Data$Taxa_cod<-as.factor(Oxygen_removal_osc_Data$Taxa_cod)
+Oxygen_removal_osc_Data$Taxa<-as.factor(Oxygen_removal_osc_Data$Taxa)
+Oxygen_removal_osc_Data$Taxa_cod <- factor(Oxygen_removal_osc_Data$Taxa_cod,levels=c("T.swinhoei","D.erythraeanus",
+                                                               "S.clavatus","C.siphonella",
+                                                               "M.fistulifera","C.cyathophora",
+                                                               "N.rowi"))
+Oxygen_removal_osc_Data$Taxa <- factor(Oxygen_removal_osc_Data$Taxa,
+                                                      levels=c("Theonella swinhoei","Diacarnus erythraeanus",
+                                                               "Suberites clavatus","Callyspongia siphonella",
+                                                               "Mycale fistulifera","Crella cyathophora",
+                                                               "Niphates rowi"))
+
+
+
+Oxygen_removal_Taxa_boxplot<-ggplot(Oxygen_removal_osc_Data,aes(x=Taxa,y=Oxygen_removal,fill= HMA_LMA))+
+                                                          
+  geom_boxplot(outlier.shape = NA)+
+  facet_grid(.~Taxa_cod,scales='free')+
+  stat_summary(fun.y = mean, geom = "point", size=7, shape=4,color = "black",
+               position = position_dodge(width = .75))+
+  labs(x = expression("Sponge code"),y = expression(Delta*O[2] ~(mu*mol~L[pumped]^-1)),fill= "")+
+   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+      panel.border = element_rect(fill = NA, color = "black"),
+      legend.key = element_rect(fill = "white", color = NA,size=30),
+       legend.title = element_text( size =20),
+       legend.text = element_text(size=30),
+      legend.key.size = unit(1.5, "cm"),
+       legend.key.width = unit(1.5,"cm"),
+      legend.position = c(0.93, 0.9) ,
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        strip.background = element_rect(fill="white",color="black", size=1.5, linetype="solid"),
+        axis.title.y=element_text(size=40),
+      axis.text.y = element_text(size = 35),
+      strip.text= element_text(size = 26,face="italic"),axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+  axis.title.y.right = element_text(color ="#EEAD0E",size=30),
+  axis.text.y.right = element_text(color ="#EEAD0E"),
+        axis.ticks.x=element_blank())+
+  coord_cartesian( ylim = c(0, 40))+
+ # scale_y_continuous(sec.axis = sec_axis(~ .,name = expression("POC "~(mu*mol~ L^-1))))+
+  scale_fill_manual(values=c("#FF4040", "#1874CD"))
+
+ggsave("Oxygen_removal_Taxa_boxplot.svg",width = 20, height =10, dpi = 120)
+
+Oxygen_removal_Taxa_boxplot
+
+```
+
+
+```{r}
+Sponges_volume<-read.csv("Sponges_volume14062021.csv")
+
+volume_Oxygen_removal_Data <- 
+  merge(Oxygen_removal_spong_Data ,Sponges_volume,by=c("Taxa","Taxa_cod","HMA_LMA","Sponge_Cod"))
+
+
+```
